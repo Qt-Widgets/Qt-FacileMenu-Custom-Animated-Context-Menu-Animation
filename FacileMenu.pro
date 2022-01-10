@@ -20,6 +20,7 @@ INCLUDEPATH += interactive_buttons/ \
 
 SOURCES += \
     facile_menu/facilemenu.cpp \
+    facile_menu/facilemenubar.cpp \
     facile_menu/facilemenuitem.cpp \
     interactive_buttons/interactivebuttonbase.cpp \
     main.cpp \
@@ -27,6 +28,9 @@ SOURCES += \
 
 HEADERS += \
     facile_menu/facilemenu.h \
+    facile_menu/facilemenuanimation.h \
+    facile_menu/facilemenubar.h \
+    facile_menu/facilemenubarinterface.h \
     facile_menu/facilemenuitem.h \
     interactive_buttons/interactivebuttonbase.h \
     mainwindow.h
@@ -44,4 +48,5 @@ RESOURCES += \
 
 DISTFILES += \
     README.md \
-    picture.gif
+    screenshots/menubar.gif \
+    screenshots/picture.gif

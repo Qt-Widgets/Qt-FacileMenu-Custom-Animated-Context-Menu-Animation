@@ -1,3 +1,4 @@
+#include <QLabel>
 #include "facilemenu.h"
 
 QColor FacileMenu::normal_bg = QColor(255, 255, 255);
@@ -5,6 +6,7 @@ QColor FacileMenu::hover_bg = QColor(128, 128, 128, 64);
 QColor FacileMenu::press_bg = QColor(128, 128, 128, 128);
 QColor FacileMenu::text_fg = QColor(0, 0, 0);
 int FacileMenu::blur_bg_alpha = DEFAULT_MENU_BLUR_ALPHA;
+QEasingCurve FacileMenu::easing_curve = QEasingCurve::OutBack; // OutCubic 也不错
 
 FacileMenu::FacileMenu(QWidget *parent) : QWidget(parent)
 {
@@ -94,27 +96,13 @@ FacileMenuItem *FacileMenu::addAction(QAction *action, bool deleteWithMenu)
     }
     else // 普通的action
     {
-        return addAction(action->icon(), action->text(), [=]{ action->trigger(); });
+        auto ac = addAction(action->icon(), action->text(), [=]{ action->trigger(); });
+        if (action->isChecked())
+            ac->check();
+        if (!action->toolTip().isEmpty())
+            ac->tooltip(action->toolTip());
+        return ac;
     }
-}
-
-/**
- * 回调：普通/静态函数
- */
-FacileMenuItem *FacileMenu::addAction(QIcon icon, QString text, void (*func)())
-{
-    auto item = createMenuItem(icon, text);
-    connect(item, &InteractiveButtonBase::clicked, this, [=]{
-        if (_showing_animation)
-            return ;
-        func();
-        if (item->isLinger())
-            return ;
-        emit signalActionTriggered(item);
-        toHide(items.indexOf(item));
-    });
-    connect(item, &InteractiveButtonBase::signalMouseEnter, this, [=]{ itemMouseEntered(item); });
-    return item;
 }
 
 /**
@@ -140,10 +128,13 @@ FacileMenuItem *FacileMenu::addAction(QIcon icon, QString text, T *obj, void (T:
 /**
  * 批量添加带数字（可以不带）的action
  * 相当于只是少了个for循环……
+ * @param pattern 例如 项目%1
+ * @param numberEnd 注意，结数值不包括结尾！
  */
-FacileMenu *FacileMenu::addNumberedActions(QString pattern, int numberStart, int numberEnd, FuncItemType config, FuncIntType clicked)
+FacileMenu *FacileMenu::addNumberedActions(QString pattern, int numberStart, int numberEnd, FuncItemType config, FuncIntType clicked, int step)
 {
-    int step = numberStart <= numberEnd ? 1 : -1;
+	if (!step)
+		step = numberStart <= numberEnd ? 1 : -1;
     for (int i = numberStart; i != numberEnd; i += step)
     {
         auto ac = addAction(pattern.arg(i), [=]{
@@ -158,11 +149,14 @@ FacileMenu *FacileMenu::addNumberedActions(QString pattern, int numberStart, int
 
 /**
  * 同上
+ * @param pattern 例如 项目%1
+ * @param numberEnd 注意，结数值不包括结尾！
  * @param config (Item*, int) 其中参数2表示number遍历的位置，不是当前item的index
  */
-FacileMenu *FacileMenu::addNumberedActions(QString pattern, int numberStart, int numberEnd, FuncItemIntType config, FuncIntType clicked)
+FacileMenu *FacileMenu::addNumberedActions(QString pattern, int numberStart, int numberEnd, FuncItemIntType config, FuncIntType clicked, int step)
 {
-    int step = numberStart <= numberEnd ? 1 : -1;
+	if (!step)
+    	step = numberStart <= numberEnd ? 1 : -1;
     for (int i = numberStart; i != numberEnd; i += step)
     {
         auto ac = addAction(pattern.arg(i), [=]{
@@ -242,6 +236,22 @@ QBoxLayout *FacileMenu::currentLayout() const
         return main_vlayout;
 }
 
+FacileMenu *FacileMenu::addTitle(QString text, int split)
+{
+    if (split < 0)
+    {
+        this->split();
+        if (layout()->count())
+            this->addSpacing(4); // 因为是与上一个菜单项分隔，不能太紧凑，要加点空白
+    }
+    QLabel* label = new QLabel(text, this);
+    label->setStyleSheet("margin: 4px; color: gray;");
+    addWidget(label);
+    if (split > 0)
+        this->split();
+    return this;
+}
+
 /**
  * 添加一项子菜单
  * 鼠标浮在上面展开
@@ -257,6 +267,7 @@ FacileMenu *FacileMenu::addMenu(QIcon icon, QString text, FuncType clicked)
         connect(item, &InteractiveButtonBase::clicked, this, [=]{
             if (_showing_animation)
                 return ;
+
             clicked();
             emit signalActionTriggered(item);
             toHide(items.indexOf(item));
@@ -267,6 +278,7 @@ FacileMenu *FacileMenu::addMenu(QIcon icon, QString text, FuncType clicked)
         connect(item, &InteractiveButtonBase::clicked, this, [=]{
             if (_showing_animation)
                 return ;
+
             // 显示子菜单
             showSubMenu(item);
         });
@@ -281,12 +293,24 @@ FacileMenu *FacileMenu::addMenu(QIcon icon, QString text, FuncType clicked)
         current_index = index;
 
         // 显示子菜单
+        // 可能是需要点击这个菜单项，但是点下去隐藏子菜单，会再次触发 mouseEnterLater 事件
+        // 需要判断位置，屏蔽第二次的 enter 事件，得以点击菜单项
+        // 不过还是需要双击才行，第一次是隐藏子菜单，第二次才是真正点击
+        QPoint showPos = mapFromGlobal(QCursor::pos());
+        if (_enter_later_pos == showPos)
+            return ;
+
+        _enter_later_pos = showPos;
         if (current_index == items.indexOf(item))
             showSubMenu(item);
     });
 
     // 创建菜单项
     FacileMenu* menu = new FacileMenu(true, this);
+    menu->split_in_row = this->split_in_row;
+    menu->enable_appear_animation = this->enable_appear_animation;
+    menu->enable_disappear_animation = this->enable_disappear_animation;
+    menu->sub_menu_show_on_cursor = this->sub_menu_show_on_cursor;
     menu->hide();
     item->setSubMenu(menu);
     connect(menu, &FacileMenu::signalHidden, item, [=]{
@@ -297,15 +321,19 @@ FacileMenu *FacileMenu::addMenu(QIcon icon, QString text, FuncType clicked)
         }
 
         // 如果是用户主动隐藏子菜单，那么就隐藏全部菜单
-        if (!menu->hidden_by_another)
+        // 有一种情况是需要点击这个菜单项而不是弹出的子菜单，需要避免
+        if (!menu->hidden_by_another && !linger_on_submenu_clicked
+                && !rect().contains(mapFromGlobal(QCursor::pos()))) // 允许鼠标浮在菜单项上，ESC关闭子菜单
         {
             this->hide(); // 隐藏自己，在隐藏事件中继续向上传递隐藏的信号
         }
     });
     connect(menu, &FacileMenu::signalActionTriggered, this, [=](FacileMenuItem* action){
+        closed_by_clicked = true;
         // 子菜单被点击了，副菜单依次隐藏
         emit signalActionTriggered(action);
-        toHide(items.indexOf(item));
+        if (!linger_on_submenu_clicked)
+            toHide(items.indexOf(item));
     });
     return menu;
 }
@@ -461,11 +489,19 @@ FacileMenu *FacileMenu::setStretchFactor(QLayout *layout, int stretch)
 
 /**
  * 添加水平分割线
+ * 不一定需要
  */
 FacileMenuItem *FacileMenu::addSeparator()
 {
     if (adding_horizone)
+    {
+        if (!row_hlayouts.last()->count())
+            return nullptr;
         return addVSeparator();
+    }
+
+    if (!main_vlayout->count())
+        return nullptr;
 
     FacileMenuItem* item = new FacileMenuItem(this);
     item->setNormalColor(QColor(64, 64, 64, 64));
@@ -494,6 +530,15 @@ FacileMenuItem *FacileMenu::lastAddedItem()
     return last_added_item;
 }
 
+bool FacileMenu::hasFocus() const
+{
+    if (QWidget::hasFocus())
+        return true;
+    if (current_sub_menu && current_sub_menu->hasFocus())
+        return true;
+    return false;
+}
+
 /**
  * 返回菜单项的索引
  * 不包括非菜单项的自定义控件、布局、分割线等
@@ -514,6 +559,15 @@ FacileMenuItem *FacileMenu::at(int index)
     if (index < 0 || index >= items.size())
         return nullptr;
     return items.at(index);
+}
+
+/**
+ * 设置菜单栏
+ * 鼠标移动时会增加判断是否移动到菜单栏按钮上
+ */
+void FacileMenu::setMenuBar(FacileMenuBarInterface *mb)
+{
+    this->menu_bar = mb;
 }
 
 /**
@@ -546,14 +600,19 @@ void FacileMenu::exec(QPoint pos)
     QPoint originPos = pos; // 不包含像素偏移的原始点
     main_vlayout->setEnabled(true);
     main_vlayout->activate(); // 先调整所有控件大小
+	this->adjustSize();
+	
+    // setAttribute(Qt::WA_DontShowOnScreen); // 会触发 setMouseGrabEnabled 错误
+    // show();
+    // hide(); // 直接显示吧
+    // setAttribute(Qt::WA_DontShowOnScreen, false);
 
     int x = pos.x() + 1;
     int y = pos.y() + 1;
     int w = width() + 1;
     int h = height() + 1;
+    QRect avai = window_rect; // 屏幕大小
 
-    // 获取屏幕大小
-    QRect avai = window_rect;
     // 如果超过范围，则调整位置
     if (x + w > avai.right())
         x = avai.right() - w;
@@ -582,13 +641,19 @@ void FacileMenu::exec(QRect expt, bool vertical, QPoint pos)
     if (pos == QPoint(-1,-1))
         pos = QCursor::pos();
     main_vlayout->setEnabled(true);
+    main_hlayout->invalidate();
     main_vlayout->activate(); // 先调整所有控件大小
+
+    // setAttribute(Qt::WA_DontShowOnScreen); // 会触发 setMouseGrabEnabled 错误
+    // show(); // 但直接显示会有一瞬间闪烁情况
+    // hide();
+    // setAttribute(Qt::WA_DontShowOnScreen, false);
 
     // 根据 rect 和 avai 自动调整范围
     QRect avai = window_rect;
     QRect rect = geometry();
     rect.moveTo(pos);
-    if (!vertical) // 优先横向对齐（顶部）
+    if (!vertical) // 优先横向对齐（顶上）
     {
         if (rect.left() <= expt.right() && rect.right() > expt.right())
             rect.moveLeft(expt.right());
@@ -596,19 +661,29 @@ void FacileMenu::exec(QRect expt, bool vertical, QPoint pos)
 
         // 避开屏幕位置
         if (expt.left() > rect.width() && rect.right() >= avai.right())
-            rect.moveLeft(expt.right() - rect.width());
-        if (expt.top() > rect.height() && rect.bottom() >= avai.bottom())
-            rect.moveTop(expt.bottom() - rect.height());
+            rect.moveLeft(expt.left() - rect.width());
+        if (rect.bottom() >= avai.bottom())
+        {
+            if (expt.top() > rect.height())
+                rect.moveTop(expt.bottom() - rect.height());
+            else
+                rect.moveTop(avai.bottom() - rect.height());
+        }
     }
-    else // 优先纵向对齐（左边）
+    else // 优先纵向对齐（左下）
     {
         if (rect.top() <= expt.bottom() && rect.bottom() > expt.bottom())
             rect.moveTop(expt.bottom());
         rect.moveLeft(expt.left());
 
         // 避开屏幕位置
-        if (expt.left() > rect.width() && rect.right() >= avai.right())
-            rect.moveLeft(expt.right() - rect.width());
+        if (rect.right() >= avai.right())
+        {
+            if (expt.left() > rect.width())
+                rect.moveLeft(expt.right() - rect.width());
+            else
+                rect.moveLeft(avai.right() - rect.width());
+        }
         if (expt.top() > rect.height() && rect.bottom() >= avai.bottom())
             rect.moveTop(expt.top() - rect.height());
     }
@@ -624,14 +699,14 @@ void FacileMenu::execute()
     current_index = -1;
 
     // 设置背景为圆角矩形
-    if (height() > 0) // 没有菜单项的时候为0
+    if (height() > 0 && border_radius) // 没有菜单项的时候为0
     {
         QPixmap pixmap(width(), height());
         pixmap.fill(Qt::transparent);
         QPainter pix_ptr(&pixmap);
         pix_ptr.setRenderHint(QPainter::Antialiasing, true);
         QPainterPath path;
-        path.addRoundedRect(0, 0, width(), height(), 5, 5);
+        path.addRoundedRect(0, 0, width(), height(), border_radius, border_radius);
         pix_ptr.fillPath(path, Qt::white);
         setMask(pixmap.mask());
     }
@@ -644,30 +719,38 @@ void FacileMenu::execute()
         int radius = qMin(64, qMin(width(), height())); // 模糊半径，也是边界
         rect.adjust(-radius, -radius, +radius, +radius);
         QScreen* screen = QApplication::screenAt(QCursor::pos());
-        QPixmap bg = screen->grabWindow(QApplication::desktop()->winId(), rect.left(), rect.top(), rect.width(), rect.height());
-
-        // 开始模糊
-        QT_BEGIN_NAMESPACE
-          extern Q_WIDGETS_EXPORT void qt_blurImage( QPainter *p, QImage &blurImage, qreal radius, bool quality, bool alphaOnly, int transposed = 0 );
-        QT_END_NAMESPACE
-
-        QPixmap pixmap = bg;
-        QPainter painter( &pixmap );
-        // 填充半透明的背景颜色，避免太透
+        if (screen)
         {
-            QColor bg_c(normal_bg);
-            bg_c.setAlpha(normal_bg.alpha() * (100 - blur_bg_alpha) / 100);
-            painter.fillRect(0, 0, pixmap.width(), pixmap.height(), bg_c);
+			QPixmap bg = screen->grabWindow(QApplication::desktop()->winId(), rect.left(), rect.top(), rect.width(), rect.height());
+
+	        // 开始模糊
+	        QT_BEGIN_NAMESPACE
+	          extern Q_WIDGETS_EXPORT void qt_blurImage( QPainter *p, QImage &blurImage, qreal radius, bool quality, bool alphaOnly, int transposed = 0 );
+	        QT_END_NAMESPACE
+
+	        QPixmap pixmap = bg;
+	        QPainter painter( &pixmap );
+	        // 填充半透明的背景颜色，避免太透
+	        {
+	            QColor bg_c(normal_bg);
+	            bg_c.setAlpha(normal_bg.alpha() * (100 - blur_bg_alpha) / 100);
+	            painter.fillRect(0, 0, pixmap.width(), pixmap.height(), bg_c);
+	        }
+	        QImage img = pixmap.toImage(); // img -blur-> painter(pixmap)
+	        qt_blurImage( &painter, img, radius, true, false );
+	        // 裁剪掉边缘（模糊后会有黑边）
+	        int c = qMin(bg.width(), bg.height());
+	        c = qMin(c/2, radius);
+	        bg_pixmap = pixmap.copy(c, c, pixmap.width()-c*2, pixmap.height()-c*2);
         }
-        QImage img = pixmap.toImage(); // img -blur-> painter(pixmap)
-        qt_blurImage( &painter, img, radius, true, false );
-        // 裁剪掉边缘（模糊后会有黑边）
-        int c = qMin(bg.width(), bg.height());
-        c = qMin(c/2, radius);
-        bg_pixmap = pixmap.copy(c, c, pixmap.width()-c*2, pixmap.height()-c*2);
     }
 
-    // 显示、动画
+    // 有些重复显示的，需要再初始化一遍
+    hidden_by_another = false;
+    using_keyboard = false;
+    closed_by_clicked = false;
+
+    // 显示动画
     QWidget::show();
     setFocus();
     startAnimationOnShowed();
@@ -688,7 +771,25 @@ void FacileMenu::toHide(int focusIndex)
     } while (menu);
     this->clearFocus();
 
+    closed_by_clicked = true;
     startAnimationOnHidden(focusIndex);
+}
+
+void FacileMenu::toClose()
+{
+    if (parent_menu)
+        parent_menu->toClose();
+    else
+        this->close();
+}
+
+/**
+ * 是因为点击了菜单项结束菜单
+ * 还是因为其他原因，比如ESC关闭、鼠标点击其他位置呢
+ */
+bool FacileMenu::isClosedByClick() const
+{
+    return closed_by_clicked;
 }
 
 /**
@@ -870,6 +971,7 @@ FacileMenu *FacileMenu::setMultiCheck(FuncCheckType clicked)
 /**
  * 设置右边提示的区域内容
  * 一般是快捷键
+ * 尽量在添加菜单项前设置
  */
 FacileMenu *FacileMenu::setTipArea(int x)
 {
@@ -878,14 +980,18 @@ FacileMenu *FacileMenu::setTipArea(int x)
 }
 
 /**
- * 设置左边提示的区域内容
+ * 设置右边提示的区域内容
  * 一般是用来放快捷键
+ * 尽量在添加菜单项前设置
  * @param tip 内容是什么不重要，只要等同于需要容纳的最长字符串即可（例如"ctrl+shit+alt+s"）
  */
 FacileMenu *FacileMenu::setTipArea(QString longestTip)
 {
     QFontMetrics fm(this->font());
-    addin_tip_area = fm.horizontalAdvance(longestTip+"Ctrl");
+    addin_tip_area = fm.horizontalAdvance(longestTip + "Ctrl");
+    // 修改现有的
+    foreach (auto item, items)
+        item->setPaddings(item_padding, addin_tip_area > 0 ? tip_area_spacing + addin_tip_area : item_padding, item_padding, item_padding);
     return this;
 }
 
@@ -896,6 +1002,38 @@ FacileMenu *FacileMenu::setTipArea(QString longestTip)
 FacileMenu *FacileMenu::setSplitInRow(bool split)
 {
     split_in_row = split;
+    return this;
+}
+
+FacileMenu *FacileMenu::setBorderRadius(int r)
+{
+    border_radius = r;
+    foreach (auto item, items)
+        item->subMenu() && item->subMenu()->setBorderRadius(r);
+    return this;
+}
+
+FacileMenu *FacileMenu::setAppearAnimation(bool en)
+{
+    this->enable_appear_animation = en;
+    foreach (auto item, items)
+        item->subMenu() && item->subMenu()->setAppearAnimation(en);
+    return this;
+}
+
+FacileMenu *FacileMenu::setDisappearAnimation(bool en)
+{
+    this->enable_disappear_animation = en;
+    foreach (auto item, items)
+        item->subMenu() && item->subMenu()->setDisappearAnimation(en);
+    return this;
+}
+
+FacileMenu *FacileMenu::setSubMenuShowOnCursor(bool en)
+{
+    this->sub_menu_show_on_cursor = en;
+    foreach (auto item, items)
+        item->subMenu() && item->subMenu()->setSubMenuShowOnCursor(en);
     return this;
 }
 
@@ -988,11 +1126,11 @@ void FacileMenu::setActionButton(InteractiveButtonBase *btn, bool isChip)
     // 设置尺寸
     if (isChip)
     {
-        btn->setPaddings(8, 8, 8, 8);
+        btn->setPaddings(item_padding);
     }
     else
     {
-        btn->setPaddings(8, 48 + addin_tip_area, 8, 8);
+        btn->setPaddings(item_padding, addin_tip_area > 0 ? tip_area_spacing + addin_tip_area : item_padding, item_padding, item_padding);
     }
 
     // 设置颜色
@@ -1016,12 +1154,14 @@ void FacileMenu::showSubMenu(FacileMenuItem *item)
         current_sub_menu->hide();
     }
 
+    if (item->subMenu()->items.count() == 0) // 没有菜单项，不显示
+        return ;
+
     current_sub_menu = item->subMenu();
     QPoint pos(-1, -1);
+    QRect avai = window_rect;
     if (using_keyboard) // 键盘模式，不是跟随鼠标位置来的
     {
-        QRect avai = window_rect;
-
         // 键盘模式，相对于点击项的右边
         QPoint tl = mapToGlobal(item->pos());
         if (tl.x() + item->width() + current_sub_menu->width() < avai.width())
@@ -1033,7 +1173,14 @@ void FacileMenu::showSubMenu(FacileMenuItem *item)
         else
             pos.setY(tl.y() - current_sub_menu->height());
     }
-    current_sub_menu->exec(pos);
+    if (sub_menu_show_on_cursor)
+        current_sub_menu->exec(pos);
+    else
+    {
+        auto geom = item->mapToGlobal(QPoint(0, 0));
+        auto rect = QRect(geom, item->size());
+        current_sub_menu->exec(rect, false, rect.topRight());
+    }
     current_sub_menu->setKeyBoardUsed(using_keyboard);
 }
 
@@ -1050,13 +1197,20 @@ bool FacileMenu::isCursorInArea(QPoint pos, FacileMenu *child)
     // 不在这范围内
     if (!geometry().contains(pos))
     {
-        // 在自己的副菜单那里
+        // 在自己的父菜单那里
         if (isSubMenu() && parent_menu->isCursorInArea(pos, this)) // 如果这也是子菜单（已展开），则递归遍历父菜单
         {
             hidden_by_another = true;
             QTimer::singleShot(0, this, [=]{
                 close(); // 把自己也隐藏了
             });
+            return true;
+        }
+        // 在菜单栏那里
+        int rst = -1;
+        if (menu_bar && (rst = menu_bar->isCursorInArea(pos)) > -1)
+        {
+            menu_bar->triggerIfNot(rst, this);
             return true;
         }
         return false;
@@ -1088,14 +1242,17 @@ bool FacileMenu::isSubMenu() const
  */
 void FacileMenu::startAnimationOnShowed()
 {
+    if (!enable_appear_animation)
+        return ;
+
     main_vlayout->setEnabled(false);
     _showing_animation = true;
-    QEasingCurve curve = QEasingCurve::OutBack;
+    QEasingCurve curve = easing_curve;
     int duration = 300;
-//    QEasingCurve curve = QEasingCurve::OutCubic;
-//    int duration = 200;
     if (items.size() <= 1)
-        curve = QEasingCurve::OutQuad;
+    {
+        duration = 200;
+    }
 
     // 从上往下的动画
     QPoint start_pos = mapFromGlobal(QCursor::pos());
@@ -1185,6 +1342,22 @@ void FacileMenu::startAnimationOnShowed()
  */
 void FacileMenu::startAnimationOnHidden(int focusIndex)
 {
+    if (!enable_disappear_animation)
+    {
+        if (focusIndex > -1)
+        {
+            // 等待点击动画结束
+            QTimer::singleShot(100, [=]{
+                close();
+            });
+        }
+        else
+        {
+            close();
+        }
+        return ;
+    }
+
     _showing_animation = true;
     // 控件移动动画
     main_vlayout->setEnabled(false);
@@ -1196,6 +1369,7 @@ void FacileMenu::startAnimationOnHidden(int focusIndex)
     for (int i = 0; i < items.size(); i++)
     {
         InteractiveButtonBase* btn = items.at(i);
+        // QPoint pos = btn->pos();
         btn->setBlockHover(true);
         QPropertyAnimation* ani = new QPropertyAnimation(btn, "pos");
         ani->setStartValue(btn->pos());
@@ -1226,6 +1400,7 @@ void FacileMenu::startAnimationOnHidden(int focusIndex)
         connect(ani, SIGNAL(finished()), ani, SLOT(deleteLater()));
         connect(ani, &QPropertyAnimation::finished, btn, [=]{
             btn->setBlockHover(false);
+            // btn->move(pos);
         });
         ani->start();
     }
@@ -1234,6 +1409,7 @@ void FacileMenu::startAnimationOnHidden(int focusIndex)
     for (int i = 0; i < other_widgets.size(); i++)
     {
         QWidget* btn = other_widgets.at(i);
+        QPoint pos = btn->pos();
         QPropertyAnimation* ani = new QPropertyAnimation(btn, "pos");
         ani->setStartValue(btn->pos());
         ani->setEasingCurve(QEasingCurve::OutCubic);
@@ -1261,6 +1437,9 @@ void FacileMenu::startAnimationOnHidden(int focusIndex)
             ani->setDuration(dur_max);
         }
         connect(ani, SIGNAL(finished()), ani, SLOT(deleteLater()));
+        // connect(ani, &QPropertyAnimation::finished, btn, [=]{
+        //     btn->move(pos);
+        // });
         ani->start();
     }
 
@@ -1289,9 +1468,19 @@ void FacileMenu::startAnimationOnHidden(int focusIndex)
     });
 }
 
+void FacileMenu::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
+
+    main_vlayout->setEnabled(true);
+    main_vlayout->invalidate(); // 不清除缓存的话 activate 会false
+    main_vlayout->activate();
+}
+
 void FacileMenu::hideEvent(QHideEvent *event)
 {
     emit signalHidden();
+    this->close(); // 子菜单关闭，不会导致自己关闭，需要手动close
     return QWidget::hideEvent(event);
 }
 
@@ -1300,8 +1489,13 @@ void FacileMenu::mouseMoveEvent(QMouseEvent *event)
     QWidget::mouseMoveEvent(event);
 
     QPoint pos = QCursor::pos();
-    if (_showing_animation || isCursorInArea(pos)) // 正在出现或在自己的区域内，不管
+    int rst = -1;
+    if ((_showing_animation && !menu_bar) || isCursorInArea(pos)) // 正在出现或在自己的区域内，不管
         ;
+    else if (menu_bar && (rst = menu_bar->isCursorInArea(pos)) > -1) // 在菜单栏
+    {
+        menu_bar->triggerIfNot(rst, this);
+    }
     else if (parent_menu && parent_menu->isCursorInArea(pos, this)) // 在父类，自己隐藏
     {
         this->hide();
@@ -1323,6 +1517,7 @@ void FacileMenu::keyPressEvent(QKeyEvent *event)
     {
         if (item->isKey((Qt::Key)key))
         {
+            _showing_animation = false; // 在showing的时候，点击是无效的，所以要关掉
             item->simulateStatePress(); // 确定是这个action的快捷键
             return ;
         }
